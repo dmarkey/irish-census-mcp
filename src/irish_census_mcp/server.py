@@ -33,11 +33,18 @@ async def lifespan(_app):
 mcp = FastMCP(
     name="irish-census",
     instructions=(
-        "Search and reconstruct families from the Irish National Archives "
-        "1821-1926 census records. Start with `resolve_place` to identify "
-        "which censuses cover a place, then `search_people` to find "
-        "candidates, then `get_household` to reconstruct families. Refs "
-        "have the form `<year>:<id>` (e.g. '1911:3666567')."
+        "Search the Irish National Archives 1821-1926 census records and "
+        "the Irish Genealogy BMD (births, marriages, deaths, baptisms, "
+        "burials) records.\n\n"
+        "Census workflow: `resolve_place` to identify which censuses cover "
+        "a place, then `search_people` to find candidates, then "
+        "`get_household` to reconstruct families. Census refs have the form "
+        "`<year>:<id>` (e.g. '1911:3666567').\n\n"
+        "BMD workflow: `bmd_search` to find vital-record candidates, then "
+        "`bmd_get_record` for the full transcription and `bmd_get_image_url` "
+        "for the scan PDF. BMD refs have the form `bmd:<record_id>` "
+        "(e.g. 'bmd:cima-2914616'). Use `bmd_search_relatives` to bridge "
+        "from a census person to their birth/marriage/death records."
     ),
     lifespan=lifespan,
 )
@@ -187,6 +194,151 @@ async def get_scan_url(
     """
     gw = _get_gateway()
     return await gw.get_scan_url(ref, form=form)
+
+
+@mcp.tool
+async def bmd_search(
+    surname: Annotated[str | None, Field(description="Surname / last name. Fuzzy unless `exact=True`.")] = None,
+    first_name: Annotated[str | None, Field(description="First name / forename.")] = None,
+    mothers_surname: Annotated[
+        str | None,
+        Field(description="Mother's birth surname (only meaningful for birth records)."),
+    ] = None,
+    events: Annotated[
+        list[Literal["birth", "marriage", "death", "baptism", "burial"]] | None,
+        Field(description="Event types to include. Defaults to all five if omitted."),
+    ] = None,
+    year_start: Annotated[int | None, Field(description="Inclusive lower bound on event year.")] = None,
+    year_end: Annotated[int | None, Field(description="Inclusive upper bound on event year.")] = None,
+    location: Annotated[
+        str | None,
+        Field(description="Free-text location filter (county, town, registration district). Server-side fuzzy."),
+    ] = None,
+    source: Annotated[
+        Literal["all", "civil", "church"],
+        Field(description="Restrict to civil (GRO) records, church records, or both."),
+    ] = "all",
+    exact: Annotated[bool, Field(description="When True, names match exactly rather than fuzzily.")] = False,
+    sort: Annotated[
+        Literal["relevance", "date"],
+        Field(description="Result ordering. 'relevance' is the site default."),
+    ] = "relevance",
+    page: Annotated[int, Field(description="1-based page number.", ge=1)] = 1,
+    per_page: Annotated[
+        Literal[10, 20, 50, 100],
+        Field(description="Results per page (server supports 10/20/50/100)."),
+    ] = 20,
+    age_at_death: Annotated[int | None, Field(description="Death-record filter (deceased's age).")] = None,
+) -> dict:
+    """Search Irish Genealogy BMD (births, marriages, deaths, baptisms, burials).
+
+    Covers civil registration (births from 1864, deaths from 1864, civil
+    marriages from 1845) and a growing set of church registers (RC, CoI,
+    Presbyterian, etc.) digitised by irishgenealogy.ie.
+
+    Returns at most `per_page` rows plus metadata (`total` or
+    `total_capped=True` if >10,000). Results include `ref` (`bmd:<id>`),
+    event type, source ('civil'|'church'), ISO date when parseable,
+    party names, and per-record meta (district, parish, mother's surname,
+    etc.). Pass `ref` to `bmd_get_record` for the full transcription.
+
+    Tip: leave events unset to widen the net; pin `year_start`/`year_end`
+    when a surname returns 10,000+ results.
+    """
+    gw = _get_gateway()
+    return await gw.bmd_search(
+        surname=surname,
+        first_name=first_name,
+        mothers_surname=mothers_surname,
+        events=events,
+        year_start=year_start,
+        year_end=year_end,
+        location=location,
+        source=source,
+        exact=exact,
+        sort=sort,
+        page=page,
+        per_page=per_page,
+        age_at_death=age_at_death,
+    )
+
+
+@mcp.tool
+async def bmd_get_record(
+    ref: Annotated[str, Field(description="BMD ref from bmd_search, e.g. 'bmd:cima-2914616'.")],
+) -> dict:
+    """Return the full transcription of one BMD record.
+
+    Field set varies by record type:
+    - Civil marriage: party names, date, group reg ID, district, image path.
+    - Civil birth: name, date, mother's birth surname, sex, district.
+    - Civil death: name, date, district, deceased's age.
+    - Church records: name, address, parents (births/marriages), priest,
+      witnesses (marriages), sponsors (baptisms), book/page/entry numbers.
+
+    `image_url` is the direct PDF link to the scan when available (some
+    older church records lack scans). Use `bmd_get_image_url` if you only
+    need the link.
+    """
+    gw = _get_gateway()
+    return await gw.bmd_get_record(ref)
+
+
+@mcp.tool
+async def bmd_get_image_url(
+    ref: Annotated[str, Field(description="BMD ref, e.g. 'bmd:cima-2914616'.")],
+) -> dict:
+    """Return the scan PDF URL for a BMD record, plus event/source.
+
+    Convenience helper — equivalent to `bmd_get_record(ref).image_url` but
+    returns a slimmer payload suitable for citation flows. `url` may be
+    null when no scan exists.
+    """
+    gw = _get_gateway()
+    return await gw.bmd_get_image_url(ref)
+
+
+@mcp.tool
+async def bmd_search_relatives(
+    census_ref: Annotated[
+        str | None,
+        Field(description="Census ref (e.g. '1911:3666567'). When given, surname/first_name/birth_year/location are derived from the census record."),
+    ] = None,
+    surname: Annotated[str | None, Field(description="Required if `census_ref` is not provided.")] = None,
+    first_name: Annotated[str | None, Field(description="Subject's first name.")] = None,
+    mothers_surname: Annotated[str | None, Field(description="Mother's birth surname (helps narrow birth candidates).")] = None,
+    birth_year: Annotated[int | None, Field(description="Estimated birth year. Derived from census ref if available.")] = None,
+    location: Annotated[str | None, Field(description="County/district hint passed to the BMD search.")] = None,
+    events: Annotated[
+        list[Literal["birth", "marriage", "death", "baptism", "burial"]] | None,
+        Field(description="Event types to chase. Defaults to ['birth','marriage','death']."),
+    ] = None,
+) -> dict:
+    """Heuristically surface BMD events for a known person.
+
+    Runs targeted bmd_search queries:
+    - birth/baptism within ±3 years of estimated birth year (using
+      `mothers_surname` if provided)
+    - marriage within ages 16-45 of estimated birth year
+    - death/burial after the subject's last seen census year
+
+    Returns candidate lists (max 10 per event type). These are heuristic —
+    treat each as a candidate to verify with `bmd_get_record`, not a
+    confirmed match.
+
+    Civil registration only goes back to 1864 (1845 for non-Catholic
+    marriages); church records cover earlier dates spottily.
+    """
+    gw = _get_gateway()
+    return await gw.bmd_search_relatives(
+        census_ref=census_ref,
+        surname=surname,
+        first_name=first_name,
+        mothers_surname=mothers_surname,
+        birth_year=birth_year,
+        location=location,
+        events=events,
+    )
 
 
 def run() -> None:

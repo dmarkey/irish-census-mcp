@@ -1,9 +1,11 @@
 # irish-census-mcp
 
 An MCP server that exposes the National Archives of Ireland census APIs
-(1821, 1831, 1841, 1851, 1901, 1911, 1926) to LLM clients, with tools
-shaped specifically for genealogy queries — finding people, reconstructing
-households, and tracing the same person across censuses.
+(1821, 1831, 1841, 1851, 1901, 1911, 1926) **and** the Irish Genealogy
+BMD records (births, marriages, deaths, baptisms, burials — civil and
+church) to LLM clients, with tools shaped specifically for genealogy
+queries: finding people, reconstructing households, tracing the same
+person across censuses, and pivoting from census records to vital records.
 
 Built on [FastMCP 2](https://gofastmcp.com).
 
@@ -19,9 +21,11 @@ have three different schemas:
 | 1821 / 1831 / 1841 / 1851 | `api-census.nationalarchives.ie` (`/census/query_c19`) | ~497k | Surviving pre-Famine fragments only |
 | 1901 / 1911 | `api-census.nationalarchives.ie` (`/census/query`) | ~8.83M | All 32 counties (whole island) |
 | 1926 | `c26-api.nationalarchives.ie` (`/api/census/query_c26a`) | ~2.97M | Free State only (26 counties) |
+| BMD (births / marriages / deaths / baptisms / burials) | `www.irishgenealogy.ie` (HTML scrape) | ~10M+ | Civil registration (1864+ for births/deaths, 1845+ for non-Catholic marriages) plus a growing catalog of church registers |
 
-This server hides all three behind six MCP tools that work in terms an
-LLM-driven family-tree query needs: places, people, households, relatives.
+This server hides all four sources behind ten MCP tools that work in
+terms an LLM-driven family-tree query needs: places, people, households,
+relatives, and the vital-record events that bracket each life.
 
 ## The driving use case
 
@@ -234,7 +238,9 @@ needs rate protection.
 
 ## Tools
 
-Six tools, all `async`, all accept and return plain JSON.
+Ten tools, all `async`, all accept and return plain JSON. The first six
+operate on the census APIs (refs like `1911:3666567`). The last four
+operate on the Irish Genealogy BMD records (refs like `bmd:cima-2914616`).
 
 ### `resolve_place(query) -> list[Place]`
 
@@ -323,6 +329,58 @@ Returns the stable API URL for a scan PDF. Forms supported: `A`, `B`,
 `B1`, `B2`, `N` (1901/1911 has all five; 1926 has A and B; pre-Famine
 has one folio). Each URL 307-redirects to a signed Linode URL valid for
 30 minutes — pass the API URL to the user, not the redirect target.
+
+### `bmd_search(...) -> BMDSearchResult`
+
+Search births, marriages, deaths, baptisms, and burials on
+irishgenealogy.ie. Filters: `surname`, `first_name`, `mothers_surname`,
+`events`, `year_start` / `year_end`, `location`, `source` (`civil` /
+`church` / `all`), `exact`, `sort`, `page`, `per_page`, `age_at_death`.
+
+```python
+bmd_search(surname="Markey", first_name="Patrick", year_start=1918, year_end=1922, per_page=20)
+# {
+#   "results": [
+#     {"ref": "bmd:cima-1281484", "event": "marriage", "source": "civil",
+#      "date": "1925-08-01", "parties": ["EVELYN FORAN", "PATRICK MARKEY"],
+#      "meta": {"Group registration ID": "...", "SR District/Reg Area": "Dublin South"}},
+#     ...
+#   ],
+#   "meta": {"page": 1, "per_page": 20, "total": 175, "last_page": 9,
+#            "centuries": {"1900": 175}}
+# }
+```
+
+For very broad surname searches the site caps totals at 10,000+ — the
+response then contains `total_capped: true` instead of `total`. Narrow
+with `year_start` / `year_end` or `location`.
+
+### `bmd_get_record(ref) -> BMDRecord`
+
+Full transcription for one record. Field set varies per event type:
+civil marriages give party names + district + group reg ID; church
+records add parents, witnesses, sponsors, priest, book/page/entry
+numbers. `image_url` points at the PDF scan when one exists (some older
+church entries have no scan).
+
+### `bmd_get_image_url(ref) -> {ref, url, event, source}`
+
+Convenience — `bmd_get_record(ref).image_url` with a slimmer payload,
+useful for citation flows where you only need the scan link.
+
+### `bmd_search_relatives(...) -> BMDRelatives`
+
+Heuristically surface BMD events around a known person. Accepts either
+a `census_ref` (in which case `surname` / `first_name` / `birth_year` /
+`location` are derived from the census record) or those fields directly.
+Runs targeted searches:
+
+- birth / baptism within ±3 years of the estimated birth year
+- marriage within ages 16–45 of the estimated birth year
+- death / burial after the subject's last seen year
+
+Each list is capped at 10 candidates. Results are heuristic — treat them
+as leads to verify with `bmd_get_record`, not as confirmed matches.
 
 ---
 

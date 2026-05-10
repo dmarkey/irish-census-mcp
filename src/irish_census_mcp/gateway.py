@@ -7,6 +7,7 @@ from typing import Any
 
 from . import matching, normalize, places
 from .api import Census1926, Census19011911, Census19th, CensusAPIError, CensusHTTP
+from .bmd import IrishGenealogyBMD, parse_bmd_ref
 
 ALL_YEARS = (1821, 1831, 1841, 1851, 1901, 1911, 1926)
 C19_YEARS = (1821, 1831, 1841, 1851)
@@ -63,6 +64,7 @@ class CensusGateway:
         self.c26 = Census1926(self.http)
         self.c1911 = Census19011911(self.http)
         self.c19 = Census19th(self.http)
+        self.bmd = IrishGenealogyBMD(self.http)
 
     async def aclose(self) -> None:
         await self.http.aclose()
@@ -524,9 +526,173 @@ class CensusGateway:
             }
         raise ValueError(f"Unsupported ref: {ref}")
 
+    # ------------------------------------------------------------------
+    # BMD (irishgenealogy.ie) — births, marriages, deaths, baptisms, burials
+    # ------------------------------------------------------------------
+
+    async def bmd_search(
+        self,
+        *,
+        surname: str | None = None,
+        first_name: str | None = None,
+        mothers_surname: str | None = None,
+        events: list[str] | None = None,
+        year_start: int | None = None,
+        year_end: int | None = None,
+        location: str | None = None,
+        source: str = "all",
+        exact: bool = False,
+        sort: str = "relevance",
+        page: int = 1,
+        per_page: int = 20,
+        age_at_death: int | None = None,
+    ) -> dict[str, Any]:
+        resp = await self.bmd.search(
+            surname=surname,
+            first_name=first_name,
+            mothers_surname=mothers_surname,
+            events=events,
+            year_start=year_start,
+            year_end=year_end,
+            location=location,
+            source=source,
+            exact=exact,
+            sort=sort,
+            page=page,
+            per_page=per_page,
+            age_at_death=age_at_death,
+        )
+        meta: dict[str, Any] = {
+            "page": resp["page"],
+            "per_page": resp["per_page"],
+            "count_text": resp["count_text"],
+        }
+        if resp["count"] is not None:
+            meta["total"] = resp["count"]
+        else:
+            # Capped at 10000+ — tell the LLM to narrow the search.
+            meta["total_capped"] = True
+        if resp["last_page"]:
+            meta["last_page"] = resp["last_page"]
+        if resp["centuries"]:
+            meta["centuries"] = resp["centuries"]
+        return {"results": resp["results"], "meta": meta}
+
+    async def bmd_get_record(self, ref: str) -> dict[str, Any]:
+        return await self.bmd.get_record(parse_bmd_ref(ref))
+
+    async def bmd_get_image_url(self, ref: str) -> dict[str, Any]:
+        d = await self.bmd.get_record(parse_bmd_ref(ref))
+        return {
+            "ref": ref,
+            "url": d.get("image_url"),
+            "event": d.get("event"),
+            "source": d.get("source"),
+        }
+
+    async def bmd_search_relatives(
+        self,
+        *,
+        census_ref: str | None = None,
+        surname: str | None = None,
+        first_name: str | None = None,
+        mothers_surname: str | None = None,
+        birth_year: int | None = None,
+        location: str | None = None,
+        events: list[str] | None = None,
+    ) -> dict[str, Any]:
+        subject: dict[str, Any] = {}
+        if census_ref:
+            person = await self.get_person(census_ref)
+            subject = {
+                "ref": person.get("ref"),
+                "name": person.get("name"),
+                "year": person.get("year"),
+                "age": person.get("age"),
+                "place": person.get("place"),
+            }
+            surname = surname or person.get("surname")
+            first_name = first_name or person.get("first_name")
+            age = person.get("age")
+            if isinstance(age, int) and isinstance(person.get("year"), int):
+                birth_year = birth_year or (person["year"] - age)
+            if not location:
+                location = _county_from_place_str(person.get("place"))
+
+        if not surname:
+            raise ValueError("Need either census_ref or surname")
+
+        valid = {"birth", "marriage", "death", "baptism", "burial"}
+        requested = [e for e in (events or ["birth", "marriage", "death"]) if e in valid]
+        if not requested:
+            raise ValueError("No valid event types requested")
+
+        out: dict[str, Any] = {}
+        if subject:
+            out["subject"] = subject
+
+        async def _run(**kw: Any) -> list[dict[str, Any]]:
+            try:
+                resp = await self.bmd.search(
+                    surname=surname,
+                    first_name=first_name,
+                    location=location,
+                    per_page=_BMD_PER_EVENT,
+                    **kw,
+                )
+                return resp["results"][:_BMD_PER_EVENT]
+            except CensusAPIError:
+                return []
+
+        tasks: dict[str, asyncio.Task] = {}
+        if "birth" in requested and birth_year:
+            tasks["birth_candidates"] = asyncio.create_task(
+                _run(
+                    events=["birth", "baptism"],
+                    year_start=birth_year - _BMD_BIRTH_WINDOW,
+                    year_end=birth_year + _BMD_BIRTH_WINDOW,
+                    mothers_surname=mothers_surname,
+                )
+            )
+        if "marriage" in requested and birth_year:
+            tasks["marriage_candidates"] = asyncio.create_task(
+                _run(
+                    events=["marriage"],
+                    year_start=birth_year + _BMD_MARRIAGE_MIN_AGE,
+                    year_end=birth_year + _BMD_MARRIAGE_MAX_AGE,
+                )
+            )
+        if "death" in requested:
+            ys: int | None = None
+            ye: int | None = None
+            if birth_year:
+                ys = birth_year + 1
+                ye = birth_year + 100
+            if subject and subject.get("year"):
+                ys = max(ys or 1864, int(subject["year"]))
+            tasks["death_candidates"] = asyncio.create_task(
+                _run(events=["death", "burial"], year_start=ys, year_end=ye)
+            )
+
+        for k, t in tasks.items():
+            out[k] = await t
+        out["notes"] = (
+            "Candidates only. Civil registration started in 1864 "
+            "(non-Catholic marriages from 1845). Use bmd_get_record to "
+            "verify any candidate."
+        )
+        return out
+
 
 def _county_from_place_str(place: str | None) -> str | None:
     if not place:
         return None
     parts = [p.strip() for p in place.split(",")]
     return parts[-1] if parts else None
+
+
+# BMD search-relatives heuristics
+_BMD_BIRTH_WINDOW = 3        # ± years around estimated birth year
+_BMD_MARRIAGE_MIN_AGE = 16
+_BMD_MARRIAGE_MAX_AGE = 45
+_BMD_PER_EVENT = 10
