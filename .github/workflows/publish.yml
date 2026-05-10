@@ -32,7 +32,9 @@ jobs:
               tools = await mcp.list_tools()
               names = {t.name for t in tools}
               expected = {'resolve_place', 'search_people', 'get_household',
-                          'get_person', 'find_relatives', 'get_scan_url'}
+                          'get_person', 'find_relatives', 'get_scan_url',
+                          'bmd_search', 'bmd_get_record', 'bmd_get_image_url',
+                          'bmd_search_relatives'}
               assert names == expected, f'tool mismatch: got {names}, expected {expected}'
               print(f'OK: {len(tools)} tools registered on {mcp.name!r}')
           asyncio.run(check())
