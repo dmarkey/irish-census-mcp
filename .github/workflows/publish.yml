@@ -1,0 +1,90 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify package imports
+        run: |
+          uv sync --frozen
+          uv run python -c "
+          import asyncio
+          from irish_census_mcp.server import mcp
+          async def check():
+              tools = await mcp.list_tools()
+              names = {t.name for t in tools}
+              expected = {'resolve_place', 'search_people', 'get_household',
+                          'get_person', 'find_relatives', 'get_scan_url'}
+              assert names == expected, f'tool mismatch: got {names}, expected {expected}'
+              print(f'OK: {len(tools)} tools registered on {mcp.name!r}')
+          asyncio.run(check())
+          "
+
+      - name: Verify version matches the pushed tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(uv run python -c "from importlib.metadata import version; print(version('irish-census-mcp'))")
+          echo "tag=$TAG_VERSION  pkg=$PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $TAG_VERSION does not match package version $PKG_VERSION. Bump pyproject.toml before tagging."
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Inspect built artifacts
+        run: |
+          ls -lh dist/
+          uv run python -m zipfile -l dist/*.whl
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish on actual tag pushes — not workflow_dispatch dry-runs.
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/irish-census-mcp
+    permissions:
+      id-token: write   # required for Trusted Publishing (OIDC)
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Trusted Publishing is configured at https://pypi.org/manage/account/publishing/
+          # No API token needed — the action authenticates via OIDC.
+          verbose: true

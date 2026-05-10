@@ -457,6 +457,41 @@ The 1926 search interface was launched in 2026 for the centennial of the
 
 ---
 
+## Publishing
+
+Releases go to PyPI as
+[`irish-census-mcp`](https://pypi.org/project/irish-census-mcp/) via a
+GitHub Actions workflow ([`.github/workflows/publish.yml`](./.github/workflows/publish.yml))
+that runs on push of any `v*` tag.
+
+The workflow uses **PyPI Trusted Publishing** (OIDC) — no API tokens, no
+secrets in GitHub. One-time setup on PyPI is required: at
+<https://pypi.org/manage/account/publishing/>, add a pending publisher with:
+
+| Field | Value |
+| --- | --- |
+| PyPI Project Name | `irish-census-mcp` |
+| Owner | `dmarkey` |
+| Repository name | `irish-census-mcp` |
+| Workflow name | `publish.yml` |
+| Environment name | `pypi` |
+
+Cutting a release after that is just:
+
+```bash
+# 1. Bump the version in pyproject.toml
+# 2. Commit
+git commit -am "Release v0.2.0"
+# 3. Tag and push
+git tag v0.2.0
+git push origin main --tags
+```
+
+The workflow validates that the tag matches `pyproject.toml`'s version
+before publishing, so a forgotten bump fails fast rather than shipping
+the wrong artefact. Manual `workflow_dispatch` runs build and verify
+but skip the publish step (no tag → nothing to ship).
+
 ## License
 
 The **code** in this repository is released under the
