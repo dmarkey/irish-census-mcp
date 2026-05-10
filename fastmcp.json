@@ -1,0 +1,6 @@
+{
+  "$schema": "https://gofastmcp.com/schemas/fastmcp.json",
+  "name": "irish-census",
+  "entrypoint": "src/irish_census_mcp/server.py:mcp",
+  "transport": "stdio"
+}
