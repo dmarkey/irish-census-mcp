@@ -1,6 +1,6 @@
 [project]
 name = "irish-census-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server exposing the Irish National Archives census APIs (1821-1926) to LLM clients."
 readme = "README.md"
 license = "MIT"

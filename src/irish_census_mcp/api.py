@@ -7,11 +7,16 @@ from typing import Any
 
 import httpx
 
+from . import __version__
+
 # Base URLs
 C26_BASE = "https://c26-api.nationalarchives.ie/api/census"
 C19XX_BASE = "https://api-census.nationalarchives.ie/census"
 
-USER_AGENT = "irish-census-mcp/0.1 (+https://github.com/dmarkey/irish-historical-census)"
+USER_AGENT = (
+    f"irish-census-mcp/{__version__} "
+    "(+https://github.com/dmarkey/irish-census-mcp)"
+)
 
 # Hosts that get separate per-host concurrency caps.
 C26_HOST = "c26-api.nationalarchives.ie"

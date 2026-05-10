@@ -146,19 +146,28 @@ attribution/permission process before reproducing any records.
 
 ## Quickstart
 
-Requires Python 3.11+. The project uses [`uv`](https://docs.astral.sh/uv/)
-for dependency management.
+Requires Python 3.11+.
+
+### Easiest: run straight from PyPI with `uvx`
+
+If you have [`uv`](https://docs.astral.sh/uv/) installed, no clone needed —
+the server runs from the published package in one command:
 
 ```bash
-git clone <this repo>
-cd irish_census_mcp
-uv sync
-uv run pytest            # 11 live-API smoke tests
+uvx irish-census-mcp
 ```
 
-Run the server over stdio (for Claude Desktop / Claude Code / any MCP client):
+`uvx` (a shortcut for `uv tool run`) downloads the package into an
+isolated environment on first use and runs the entry point. Subsequent
+runs are cached. Pin a version with `uvx irish-census-mcp@0.2.0`.
+
+### From source (for development)
 
 ```bash
+git clone https://github.com/dmarkey/irish-census-mcp.git
+cd irish-census-mcp
+uv sync
+uv run pytest            # 11 live-API smoke tests
 uv run python -m irish_census_mcp
 ```
 
@@ -175,7 +184,25 @@ uv run fastmcp run src/irish_census_mcp/server.py
 ### Claude Desktop / Claude Code
 
 Add to your MCP config (`~/.config/claude/mcp_servers.json` or whatever
-your client uses):
+your client uses).
+
+**Recommended — run from PyPI via `uvx`** (no clone, no venv to manage):
+
+```json
+{
+  "mcpServers": {
+    "irish-census": {
+      "command": "uvx",
+      "args": ["irish-census-mcp"]
+    }
+  }
+}
+```
+
+Pin a version if you want reproducible behaviour:
+`"args": ["irish-census-mcp@0.2.0"]`.
+
+**Or, from a local clone** (useful when you're hacking on the server):
 
 ```json
 {
@@ -183,7 +210,7 @@ your client uses):
     "irish-census": {
       "command": "uv",
       "args": [
-        "--directory", "/path/to/irish_census_mcp",
+        "--directory", "/path/to/irish-census-mcp",
         "run", "python", "-m", "irish_census_mcp"
       ]
     }
